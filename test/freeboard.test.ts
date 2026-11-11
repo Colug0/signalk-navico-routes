@@ -5,6 +5,7 @@ import { buildManifest, EXTENSION_ID, plotterExtensionProvider } from '../src/fr
 import { PLUGIN_ID } from '../src/types';
 import {
   failureMessage,
+  hasUnsavedEdits,
   mfdName,
   NAME_LIMIT,
   routeSummary,
@@ -69,6 +70,19 @@ describe('send window logic', () => {
     ).toEqual({ id: 'abc', url: '/signalk/v2/api/resources/routes/abc', name: 'Passage' });
   });
 
+  it('keeps the live-route handle when Freeboard sends one', () => {
+    expect(
+      routeTarget({ target: { kind: 'route', id: 'abc', routeId: 'live-7', name: 'P' } }),
+    ).toMatchObject({ id: 'abc', routeId: 'live-7' });
+    expect(routeTarget({ target: { kind: 'route', id: 'abc' } })).not.toHaveProperty('routeId');
+  });
+
+  it('detects unsaved edits in the live route', () => {
+    expect(hasUnsavedEdits({ routeId: 'live-7', saved: true, dirty: true })).toBe(true);
+    expect(hasUnsavedEdits({ routeId: 'live-7', saved: true, dirty: false })).toBe(false);
+    expect(hasUnsavedEdits(undefined)).toBe(false);
+  });
+
   it('builds the route URL when href is missing or not a route', () => {
     expect(routeTarget({ target: { kind: 'route', id: 'a b' } })).toEqual({
       id: 'a b',
@@ -127,7 +141,7 @@ describe('send window logic', () => {
 
   it('turns failed requests into messages', () => {
     expect(failureMessage(401, undefined)).toMatch(/Log in/);
-    expect(failureMessage(403, { error: 'x' })).toMatch(/read\/write/);
+    expect(failureMessage(403, { error: 'x' })).toMatch(/read\/write.*2\.35.*admin/);
     expect(failureMessage(503, { error: 'plugin is not running' })).toBe('plugin is not running');
     expect(failureMessage(500, 'oops')).toBe('Request failed (HTTP 500).');
   });

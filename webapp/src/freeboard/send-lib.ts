@@ -15,6 +15,8 @@ export interface RouteTarget {
   url: string;
   /** The name Freeboard showed, until the route itself is loaded. */
   name: string;
+  /** Freeboard's live-route handle, when the route is on the chart. */
+  routeId?: string;
 }
 
 /**
@@ -30,11 +32,12 @@ export function routeTarget(invocation: unknown): RouteTarget | { problem: strin
   if (typeof target !== 'object' || target === null) {
     return { problem: 'Choose "Send to MFD" on a route in Freeboard.' };
   }
-  const { kind, id, href, name } = target as {
+  const { kind, id, href, name, routeId } = target as {
     kind?: unknown;
     id?: unknown;
     href?: unknown;
     name?: unknown;
+    routeId?: unknown;
   };
   if (kind !== 'route') {
     return { problem: 'Only routes can be sent to the MFD.' };
@@ -47,7 +50,21 @@ export function routeTarget(invocation: unknown): RouteTarget | { problem: strin
     typeof href === 'string' && href.indexOf('/resources/routes/') === 0
       ? href
       : '/resources/routes/' + encodeURIComponent(id);
-  return { id, url: '/signalk/v2/api' + path, name: typeof name === 'string' ? name : '' };
+  return {
+    id,
+    url: '/signalk/v2/api' + path,
+    name: typeof name === 'string' ? name : '',
+    ...(typeof routeId === 'string' && routeId ? { routeId } : {}),
+  };
+}
+
+/**
+ * Whether Freeboard's live copy of the route (a `route.get` result) has
+ * edits that are not saved yet. The upload reads the stored route, so it
+ * would send the older version.
+ */
+export function hasUnsavedEdits(live: unknown): boolean {
+  return typeof live === 'object' && live !== null && (live as { dirty?: unknown }).dirty === true;
 }
 
 export interface RouteSummary {
@@ -81,7 +98,7 @@ export { NAME_LIMIT };
 /** Message for a failed request, from its status and (JSON) body. */
 export function failureMessage(status: number, body: unknown): string {
   if (status === 401 || status === 403) {
-    return 'Not allowed. Log in to Signal K with read/write access.';
+    return 'Not allowed. Log in to Signal K with read/write access (before Signal K 2.35: as admin).';
   }
   const error =
     typeof body === 'object' && body !== null ? (body as { error?: unknown }).error : undefined;
@@ -92,3 +109,8 @@ export function failureMessage(status: number, body: unknown): string {
 export function sentMessage(name: string): string {
   return 'Sent "' + name + '" to the MFD. Sending it again adds a second copy there.';
 }
+
+export const ALREADY_SENT =
+  'Already sent to the MFD from this window. Sending it again would add a second copy there.';
+
+export const UNSAVED_EDITS = 'This route has unsaved changes. Save it first, then send it.';

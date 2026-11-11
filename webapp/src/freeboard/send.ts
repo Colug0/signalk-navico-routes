@@ -7,15 +7,19 @@
 import { resolveTheme } from '../lib';
 import { connectBus } from './bus';
 import {
+  ALREADY_SENT,
   NAME_LIMIT,
+  UNSAVED_EDITS,
   UPLOAD_URL,
   failureMessage,
+  hasUnsavedEdits,
   mfdName,
   routeSummary,
   routeTarget,
   sentMessage,
 } from './send-lib';
 import type { Theme } from '../lib';
+import type { BusClient } from './bus';
 import type { RouteTarget } from './send-lib';
 
 function el<T extends HTMLElement>(id: string): T {
@@ -27,7 +31,13 @@ const nameInput = el<HTMLInputElement>('name');
 const sendButton = el<HTMLButtonElement>('send');
 const message = el<HTMLParagraphElement>('message');
 
+let bus: BusClient | undefined;
 let route: RouteTarget | undefined;
+/**
+ * Routes uploaded from this window. Freeboard reuses an open window for
+ * later choices, so a route may come back after it was sent.
+ */
+const sent = new Set<string>();
 /** The route's own name, which the MFD gets when the name field is empty. */
 let routeName = '';
 /** Bumped per target, so a late answer for an earlier route is ignored. */
@@ -75,33 +85,60 @@ function show(invocation: unknown): void {
     return;
   }
   what.textContent = 'Route: ' + (target.name || target.id);
-  nameInput.value = mfdName(target.name);
+  const proposed = mfdName(target.name);
+  nameInput.value = proposed;
   nameInput.disabled = false;
   update();
-  getJson(target.url)
-    .then((resource) => {
-      if (run !== generation) {
-        return;
-      }
-      const summary = routeSummary(resource, target.name);
-      what.textContent =
-        'Route: ' + (summary.name || target.id) + ' (' + summary.points + ' points)';
-      if (summary.fromMfd) {
-        say('This route came from the MFD; it is already there.');
-        nameInput.disabled = true;
-        update();
-        return;
-      }
+  void load(target, run, proposed);
+}
+
+/** Whether Freeboard holds unsaved edits of the route; false if it cannot tell. */
+async function unsavedEdits(target: RouteTarget): Promise<boolean> {
+  if (!bus || !target.routeId || !bus.has('routes')) {
+    return false;
+  }
+  try {
+    return hasUnsavedEdits(await bus.call('route.get', { routeId: target.routeId }));
+  } catch {
+    return false; // no longer on the chart: the stored route is all there is
+  }
+}
+
+async function load(target: RouteTarget, run: number, proposed: string): Promise<void> {
+  try {
+    const dirty = await unsavedEdits(target);
+    const resource = dirty ? undefined : await getJson(target.url);
+    if (run !== generation) {
+      return;
+    }
+    if (dirty) {
+      say(UNSAVED_EDITS);
+      nameInput.disabled = true;
+      return;
+    }
+    const summary = routeSummary(resource, target.name);
+    what.textContent = 'Route: ' + (summary.name || target.id) + ' (' + summary.points + ' points)';
+    if (summary.fromMfd) {
+      say('This route came from the MFD; it is already there.');
+      nameInput.disabled = true;
+      return;
+    }
+    // Keep a name the user typed while the route was loading.
+    if (nameInput.value === proposed) {
       nameInput.value = mfdName(summary.name);
-      routeName = summary.name;
-      route = target;
-      update();
-    })
-    .catch((err: unknown) => {
-      if (run === generation) {
-        say(err instanceof Error ? err.message : String(err), 'error');
-      }
-    });
+    }
+    routeName = summary.name;
+    if (sent.has(target.id)) {
+      say(ALREADY_SENT, 'ok');
+      return;
+    }
+    route = target;
+    update();
+  } catch (err) {
+    if (run === generation) {
+      say(err instanceof Error ? err.message : String(err), 'error');
+    }
+  }
 }
 
 async function send(): Promise<void> {
@@ -120,9 +157,11 @@ async function send(): Promise<void> {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ routes: [name ? { id: target.id, name } : { id: target.id }] }),
     });
+    // Uploads only add on the MFD: a second click would make a copy, even
+    // after the window has moved on to another route and back.
+    sent.add(target.id);
     if (run === generation) {
       say(sentMessage(name || mfdName(routeName) || target.id), 'ok');
-      // Uploads only add on the MFD: a second click would make a copy.
       route = undefined;
     }
   } catch (err) {
@@ -145,17 +184,18 @@ nameInput.maxLength = NAME_LIMIT;
 sendButton.addEventListener('click', () => void send());
 
 connectBus()
-  .then(async (bus) => {
-    show(bus.handshake.context && bus.handshake.context.invocation);
+  .then(async (client) => {
+    bus = client;
+    show(client.handshake.context && client.handshake.context.invocation);
     // A window that stays open hears later choices as events.
-    await bus.subscribe(['action.invoked'], (_event, invocation) => show(invocation));
-    if (bus.has('nightMode')) {
+    await client.subscribe(['action.invoked'], (_event, invocation) => show(invocation));
+    if (client.has('nightMode')) {
       const follow = (state: unknown) => {
         const enabled = (state as { enabled?: unknown } | null)?.enabled;
         setTheme(enabled === true ? 'night' : 'day');
       };
-      await bus.subscribe(['nightMode.changed'], (_event, state) => follow(state));
-      follow(await bus.call('nightMode.get'));
+      await client.subscribe(['nightMode.changed'], (_event, state) => follow(state));
+      follow(await client.call('nightMode.get'));
     }
   })
   .catch(() => {
