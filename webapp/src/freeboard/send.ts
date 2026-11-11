@@ -196,21 +196,30 @@ setTheme(
 nameInput.maxLength = NAME_LIMIT;
 sendButton.addEventListener('click', () => void send());
 
-connectBus()
-  .then(async (client) => {
+/** Follows Freeboard's night display; the window keeps its own theme otherwise. */
+async function followNightMode(client: BusClient): Promise<void> {
+  const follow = (state: unknown) => {
+    const enabled = (state as { enabled?: unknown } | null)?.enabled;
+    setTheme(enabled === true ? 'night' : 'day');
+  };
+  await client.subscribe(['nightMode.changed'], (_event, state) => follow(state));
+  follow(await client.call('nightMode.get'));
+}
+
+connectBus().then(
+  (client) => {
     bus = client;
     show(client.handshake.context && client.handshake.context.invocation);
-    // A window that stays open hears later choices as events.
-    await client.subscribe(['action.invoked'], (_event, invocation) => show(invocation));
+    // A window that stays open hears later choices as events. Without them
+    // the window still works for the route it was opened for.
+    client
+      .subscribe(['action.invoked'], (_event, invocation) => show(invocation))
+      .catch(() => undefined);
     if (client.has('nightMode')) {
-      const follow = (state: unknown) => {
-        const enabled = (state as { enabled?: unknown } | null)?.enabled;
-        setTheme(enabled === true ? 'night' : 'day');
-      };
-      await client.subscribe(['nightMode.changed'], (_event, state) => follow(state));
-      follow(await client.call('nightMode.get'));
+      followNightMode(client).catch(() => undefined);
     }
-  })
-  .catch(() => {
+  },
+  () => {
     what.textContent = 'Open this window from a route in Freeboard-SK.';
-  });
+  },
+);
