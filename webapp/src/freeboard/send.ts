@@ -54,7 +54,7 @@ function say(text: string, kind?: 'ok' | 'error' | 'busy'): void {
 }
 
 function update(): void {
-  sendButton.disabled = !route || sending;
+  sendButton.disabled = !route || sending || sent.has(route.id);
 }
 
 async function getJson(url: string, init?: RequestInit): Promise<unknown> {
@@ -143,7 +143,7 @@ async function load(target: RouteTarget, run: number, proposed: string): Promise
 
 async function send(): Promise<void> {
   const target = route;
-  if (!target || sending) {
+  if (!target || sending || sent.has(target.id)) {
     return;
   }
   const run = generation;
@@ -152,6 +152,15 @@ async function send(): Promise<void> {
   update();
   say('Sending…', 'busy');
   try {
+    // The route may have been edited on the chart since the window loaded it.
+    if (await unsavedEdits(target)) {
+      if (run === generation) {
+        say(UNSAVED_EDITS);
+        nameInput.disabled = true;
+        route = undefined;
+      }
+      return;
+    }
     await getJson(UPLOAD_URL, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -162,6 +171,10 @@ async function send(): Promise<void> {
     sent.add(target.id);
     if (run === generation) {
       say(sentMessage(name || mfdName(routeName) || target.id), 'ok');
+      route = undefined;
+    } else if (route && route.id === target.id) {
+      // The same route was chosen again while it was being sent.
+      say(ALREADY_SENT, 'ok');
       route = undefined;
     }
   } catch (err) {
